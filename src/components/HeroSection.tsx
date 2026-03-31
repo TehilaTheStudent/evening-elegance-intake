@@ -1,6 +1,16 @@
+import { Link } from "react-router-dom";
+import { Crown } from "lucide-react";
+
 const HeroSection = () => {
   return (
     <section className="relative py-20 md:py-28 text-center" dir="rtl">
+      <Link
+        to="/admin"
+        className="absolute top-6 left-6 text-muted-foreground/20 hover:text-gold transition-colors"
+        title="Admin"
+      >
+        <Crown className="w-5 h-5" />
+      </Link>
       <div className="max-w-3xl mx-auto px-6">
         {/* Decorative line */}
         <div className="flex items-center justify-center gap-4 mb-8 opacity-60">

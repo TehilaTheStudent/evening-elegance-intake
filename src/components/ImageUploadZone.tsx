@@ -41,7 +41,7 @@ const ImageUploadZone = ({ onImageSelect, preview }: ImageUploadZoneProps) => {
           <img
             src={preview}
             alt="תצוגה מקדימה"
-            className="w-full h-72 object-cover"
+            className="w-full max-h-96 object-contain"
           />
           <button
             type="button"

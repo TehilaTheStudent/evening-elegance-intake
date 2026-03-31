@@ -1,4 +1,8 @@
 import { useState, useCallback } from "react";
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { collection, addDoc, serverTimestamp } from "firebase/firestore";
+import { signInAnonymously } from "firebase/auth";
+import { auth, db, storage } from "@/lib/firebase";
 import ImageUploadZone from "./ImageUploadZone";
 import SubmissionStatus from "./SubmissionStatus";
 import SuccessConfirmation from "./SuccessConfirmation";
@@ -42,6 +46,7 @@ const UploadForm = () => {
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [phase, setPhase] = useState<SubmitPhase>("idle");
+  const [processedPreview, setProcessedPreview] = useState<string | null>(null);
   const [errors, setErrors] = useState<Partial<Record<keyof FormData | "image", string>>>({});
 
   const handleImageSelect = useCallback((file: File | null) => {
@@ -72,16 +77,85 @@ const UploadForm = () => {
     return Object.keys(newErrors).length === 0;
   };
 
-  const simulateSubmit = async () => {
-    if (!validate()) return;
+  const compressImage = (file: File, maxWidth = 1024, quality = 0.7): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        let width = img.width;
+        let height = img.height;
+        if (width > maxWidth) {
+          height = (height * maxWidth) / width;
+          width = maxWidth;
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx?.drawImage(img, 0, 0, width, height);
+        const base64 = canvas.toDataURL("image/jpeg", quality).split(",")[1];
+        resolve(base64);
+      };
+      img.onerror = reject;
+      img.src = URL.createObjectURL(file);
+    });
+  };
 
-    setPhase("uploading");
-    await new Promise((r) => setTimeout(r, 1200));
-    setPhase("processing");
-    await new Promise((r) => setTimeout(r, 1800));
-    setPhase("saving");
-    await new Promise((r) => setTimeout(r, 1000));
-    setPhase("done");
+  const handleSubmit = async () => {
+    if (!validate() || !imageFile) return;
+
+    try {
+      // Sign in anonymously
+      const userCredential = await signInAnonymously(auth);
+      const userId = userCredential.user.uid;
+
+      // Upload original image
+      setPhase("uploading");
+      const timestamp = Date.now();
+      const originalRef = ref(storage, `images/${timestamp}_original_${imageFile.name}`);
+      await uploadBytes(originalRef, imageFile);
+      const originalUrl = await getDownloadURL(originalRef);
+
+      // Process with Gemini AI (server-side)
+      let processedUrl: string | null = null;
+      setPhase("processing");
+      const compressedBase64 = await compressImage(imageFile);
+      const aiResponse = await fetch("/api/process-image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageBase64: compressedBase64 }),
+      });
+      const aiData = await aiResponse.json();
+      if (aiData.processedImage) {
+        const processedDataUrl = `data:image/jpeg;base64,${aiData.processedImage}`;
+        setProcessedPreview(processedDataUrl);
+        const processedBlob = await fetch(processedDataUrl).then((r) => r.blob());
+        const processedRef = ref(storage, `images/${timestamp}_processed_${imageFile.name}`);
+        await uploadBytes(processedRef, processedBlob);
+        processedUrl = await getDownloadURL(processedRef);
+      }
+
+      // Save to Firestore
+      setPhase("saving");
+      await addDoc(collection(db, "listings"), {
+        description: form.description,
+        city: form.city,
+        size: form.size,
+        color: form.color,
+        price: Number(form.price),
+        notes: form.notes,
+        originalImageUrl: originalUrl,
+        processedImageUrl: processedUrl,
+        status: "pending",
+        createdAt: serverTimestamp(),
+        userId,
+      });
+
+      setPhase("done");
+    } catch (error) {
+      console.error("Upload error:", error);
+      alert("שגיאה: " + (error instanceof Error ? error.message : "Unknown error"));
+      setPhase("idle");
+    }
   };
 
   const reset = () => {
@@ -89,6 +163,7 @@ const UploadForm = () => {
     setImageFile(null);
     setImagePreview(null);
     setPhase("idle");
+    setProcessedPreview(null);
     setErrors({});
   };
 
@@ -148,18 +223,22 @@ const UploadForm = () => {
             <div className="absolute inset-0 bg-gradient-to-b from-charcoal/90 to-charcoal" />
             <div className="relative z-10 text-center space-y-6">
               <img
-                src={heroGown}
-                alt="שמלת ערב לדוגמה"
-                className="w-full max-w-[240px] mx-auto rounded-lg shadow-elevated opacity-90"
+                src={processedPreview || heroGown}
+                alt={processedPreview ? "תמונה מעובדת" : "שמלת ערב לדוגמה"}
+                className={`w-full max-w-[240px] mx-auto rounded-lg shadow-elevated transition-opacity duration-500 ${
+                  processedPreview ? "opacity-100" : "opacity-90"
+                }`}
                 width={640}
                 height={960}
               />
               <div>
                 <p className="font-serif text-lg text-primary-foreground/90">
-                  הפריט שלך כאן
+                  {processedPreview ? "תוצאת העיבוד" : "הפריט שלך כאן"}
                 </p>
                 <p className="font-sans text-xs text-primary-foreground/50 mt-1">
-                  התמונה תעובד אוטומטית לתצוגת קטלוג מקצועית
+                  {processedPreview
+                    ? "התמונה עובדה בהצלחה לתצוגת קטלוג"
+                    : "התמונה תעובד אוטומטית לתצוגת קטלוג מקצועית"}
                 </p>
               </div>
             </div>
@@ -293,7 +372,7 @@ const UploadForm = () => {
             )}
 
             <button
-              onClick={simulateSubmit}
+              onClick={handleSubmit}
               disabled={isSubmitting}
               className="w-full py-3.5 rounded-lg bg-charcoal text-primary-foreground font-sans text-sm tracking-wide hover:bg-charcoal-light transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed shadow-soft hover:shadow-elevated"
             >
